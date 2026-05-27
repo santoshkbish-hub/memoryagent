@@ -45,8 +45,35 @@ The LLM never writes directly to the database. Code owns IDs, timestamps, embedd
 **Conflict handling:** Uses `SUPERSEDE` instead of in-place update, keeping an audit trail (old memory gets `status=superseded, valid_until=<timestamp>`, new memory links back via `supersedes_id`).
 
 **Data model (SQLite):**
-- `turns` — raw conversation provenance, not retrieved by default
-- `memories` — typed semantic memories with status, confidence, importance, timestamps, source turn, supersession link, and embedding JSON
+
+`turns` — raw conversation provenance, not retrieved by default
+
+| Field | Description |
+|---|---|
+| `id` | `turn_<uuid>` |
+| `session_id` | Groups turns into conversations |
+| `role` | `user` or `assistant` |
+| `content` | Raw message text |
+| `created_at` | UTC ISO timestamp |
+
+`memories` — typed semantic memories
+
+| Field | Description |
+|---|---|
+| `id` | `mem_<short_uuid>` |
+| `user_id` | Partitions memories per user |
+| `type` | `preference` / `working_style` / `project_decision` / `fact` / `temporary` |
+| `content` | The actual memory text |
+| `status` | `active` / `superseded` / `deleted` / `rejected` |
+| `importance` | 1-5, influences retrieval ranking |
+| `confidence` | 0.0-1.0, LLM's confidence in the memory |
+| `source_turn_id` | Links back to the turn that created this memory |
+| `supersedes_id` | Points to the older memory this one replaced |
+| `embedding_json` | Vector embedding for similarity search |
+| `created_at` | UTC ISO timestamp |
+| `updated_at` | Last status change |
+| `valid_until` | Set when superseded/expired |
+| `metadata_json` | Extra info (e.g. `{"reason": "..."}`) |
 
 ## UI Features
 
