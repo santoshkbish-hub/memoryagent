@@ -27,6 +27,12 @@ class MemoryRetriever:
     embedding_client: EmbeddingClient
 
     min_similarity: float = 0.1
+    always_inject_types: set[str] = None
+    max_always: int = 5
+
+    def __post_init__(self) -> None:
+        if self.always_inject_types is None:
+            self.always_inject_types = {"preference", "working_style"}
 
     def retrieve(self, user_id: str, query: str, k: int = 5) -> list[Memory]:
         memories = self.store.list_active_memories(user_id)
@@ -35,22 +41,47 @@ class MemoryRetriever:
 
         query_embedding = self.embedding_client.embed_text(query)
         query_tokens = self._tokens(query)
-        scored = []
+
+        always = []
+        topical = []
+
         for memory in memories:
             similarity = cosine_similarity(query_embedding, memory.embedding)
-            if similarity < self.min_similarity:
-                log.info("retrieve q=%r mem=%r sim=%.4f SKIP (below %.2f)",
-                         query[:40], memory.content[:40], similarity, self.min_similarity)
-                continue
             keyword_boost = self._keyword_overlap_boost(query_tokens, self._tokens(memory.content))
             stale_penalty = self._stale_penalty(memory.updated_at)
             score = similarity + (0.05 * memory.importance) + keyword_boost - stale_penalty
-            scored.append(ScoredMemory(memory=memory, score=score))
 
-        scored.sort(key=lambda item: item.score, reverse=True)
-        for item in scored[:k]:
-            log.info("retrieve q=%r mem=%r score=%.4f PASS", query[:40], item.memory.content[:40], item.score)
-        return [item.memory for item in scored[:k]]
+            if memory.type in self.always_inject_types:
+                always.append(ScoredMemory(memory=memory, score=score))
+                log.info("retrieve q=%r mem=%r score=%.4f ALWAYS(%s)",
+                         query[:40], memory.content[:40], score, memory.type)
+            elif similarity >= self.min_similarity:
+                topical.append(ScoredMemory(memory=memory, score=score))
+                log.info("retrieve q=%r mem=%r sim=%.4f score=%.4f TOPICAL",
+                         query[:40], memory.content[:40], similarity, score)
+            else:
+                log.info("retrieve q=%r mem=%r sim=%.4f SKIP",
+                         query[:40], memory.content[:40], similarity)
+
+        always.sort(key=lambda item: item.score, reverse=True)
+        topical.sort(key=lambda item: item.score, reverse=True)
+
+        result_ids = set()
+        results = []
+
+        for item in always[:self.max_always]:
+            results.append(item.memory)
+            result_ids.add(item.memory.id)
+
+        remaining = k - len(results)
+        for item in topical[:max(0, remaining)]:
+            if item.memory.id not in result_ids:
+                results.append(item.memory)
+
+        log.info("retrieve returned %d memories (%d always + %d topical)",
+                 len(results), min(len(always), self.max_always),
+                 len(results) - min(len(always), self.max_always))
+        return results
 
     @staticmethod
     def _tokens(text: str) -> set[str]:
